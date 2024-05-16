@@ -21,46 +21,8 @@ import collections
 import os
 import pathlib
 import json
-import generation_eval_utils
-import pprint
 import warnings
 from packaging import version
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        'candidates_json',
-        type=str,
-        help='Candidates json mapping from image_id --> candidate.')
-
-    parser.add_argument(
-        'image_dir',
-        type=str,
-        help='Directory of images, with the filenames as image ids.')
-
-    parser.add_argument(
-        '--references_json',
-        default=None,
-        help='Optional references json mapping from image_id --> [list of references]')
-
-    parser.add_argument(
-        '--compute_other_ref_metrics',
-        default=1,
-        type=int,
-        help='If references is specified, should we compute standard reference-based metrics?')
-
-    parser.add_argument(
-        '--save_per_instance',
-        default=None,
-        help='if set, we will save per instance clipscores to this file')
-
-    args = parser.parse_args()
-
-    if isinstance(args.save_per_instance, str) and not args.save_per_instance.endswith('.json'):
-        print('if you\'re saving per-instance, please make sure the filepath ends in json.')
-        quit()
-    return args
 
 
 class CLIPCapDataset(torch.utils.data.Dataset):
@@ -86,12 +48,13 @@ class CLIPImageDataset(torch.utils.data.Dataset):
         self.preprocess = self._transform_test(224)
 
     def _transform_test(self, n_px):
+        # the mean and standard deviation are for ConSite 10k test set
         return Compose([
             Resize(n_px, interpolation=Image.BICUBIC),
             CenterCrop(n_px),
             lambda image: image.convert("RGB"),
             ToTensor(),
-            Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            Normalize((0.54935052, 0.51149332, 0.47237882), (0.21584475, 0.22376211, 0.24108793)),
         ])
 
     def __getitem__(self, idx):
@@ -203,23 +166,9 @@ def get_refonlyclipscore(model, references, candidates, device):
     return np.mean(per), per
 
 
-def main():
-    args = parse_args()
+def compute_clip_score(image_paths, candidates, references):
 
-    image_paths = [os.path.join(args.image_dir, path) for path in os.listdir(args.image_dir)
-                   if path.endswith(('.png', '.jpg', '.jpeg', '.tiff'))]
     image_ids = [pathlib.Path(path).stem for path in image_paths]
-
-    with open(args.candidates_json) as f:
-        candidates = json.load(f)
-    candidates = [candidates[cid] for cid in image_ids]
-
-    if args.references_json:
-        with open(args.references_json) as f:
-            references = json.load(f)
-            references = [references[cid] for cid in image_ids]
-            if isinstance(references[0], str):
-                references = [[r] for r in references]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == 'cpu':
@@ -236,7 +185,7 @@ def main():
     _, per_instance_image_text, candidate_feats = get_clip_score(
         model, image_feats, candidates, device)
 
-    if args.references_json:
+    if references:
         # get text-text clipscore
         _, per_instance_text_text = get_refonlyclipscore(
             model, references, candidate_feats, device)
@@ -246,28 +195,11 @@ def main():
                   for image_id, clipscore, refclipscore in
                   zip(image_ids, per_instance_image_text, refclipscores)}
 
+        return np.mean([s['CLIPScore'] for s in scores.values()]), np.mean([s['RefCLIPScore'] for s in scores.values()])
+    
     else:
         scores = {image_id: {'CLIPScore': float(clipscore)}
                   for image_id, clipscore in
                   zip(image_ids, per_instance_image_text)}
-        print('CLIPScore: {:.4f}'.format(np.mean([s['CLIPScore'] for s in scores.values()])))
+        return np.mean([s['CLIPScore'] for s in scores.values()])
 
-    if args.references_json:
-        if args.compute_other_ref_metrics:
-            other_metrics = generation_eval_utils.get_all_metrics(references, candidates)
-            for k, v in other_metrics.items():
-                if k == 'bleu':
-                    for bidx, sc in enumerate(v):
-                        print('BLEU-{}: {:.4f}'.format(bidx+1, sc))
-                else:
-                    print('{}: {:.4f}'.format(k.upper(), v))
-        print('CLIPScore: {:.4f}'.format(np.mean([s['CLIPScore'] for s in scores.values()])))
-        print('RefCLIPScore: {:.4f}'.format(np.mean([s['RefCLIPScore'] for s in scores.values()])))
-
-    if args.save_per_instance:
-        with open(args.save_per_instance, 'w') as f:
-            f.write(json.dumps(scores))
-
-
-if __name__ == '__main__':
-    main()
