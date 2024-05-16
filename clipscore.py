@@ -169,7 +169,7 @@ def get_refonlyclipscore(model, references, candidates, device):
 def compute_clip_score(image_paths, candidates, references):
 
     image_ids = [pathlib.Path(path).stem for path in image_paths]
-
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == 'cpu':
         warnings.warn(
@@ -201,5 +201,5 @@ def compute_clip_score(image_paths, candidates, references):
         scores = {image_id: {'CLIPScore': float(clipscore)}
                   for image_id, clipscore in
                   zip(image_ids, per_instance_image_text)}
-        return np.mean([s['CLIPScore'] for s in scores.values()])
+        return np.mean([s['CLIPScore'] for s in scores.values()]), None
 
